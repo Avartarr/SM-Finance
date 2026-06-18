@@ -43,6 +43,9 @@ const creditCards = [
   { key: "amex", name: "American Express" },
 ] as const;
 
+type CreditCardKey = (typeof creditCards)[number]["key"];
+type DeleteTable = "expenses" | "savings" | "direct_debits" | "notes";
+
 type Totals = {
   houseBudget: number;
   totalBudgetBase: number;
@@ -76,6 +79,15 @@ function optionalTableError(error: { message?: string } | null) {
     : error;
 }
 
+function deleteLabel(table: DeleteTable) {
+  return {
+    expenses: "Expense",
+    savings: "Savings Entry",
+    direct_debits: "Direct Debit",
+    notes: "Note",
+  }[table];
+}
+
 export function FinanceApp({ view }: { view: View }) {
   const supabase = useMemo(() => createClient(), []);
   const searchParams = useSearchParams();
@@ -101,6 +113,10 @@ export function FinanceApp({ view }: { view: View }) {
   const [reportEnd, setReportEnd] = useState("");
   const [editingDebit, setEditingDebit] = useState<DirectDebit | null>(null);
   const [editingNote, setEditingNote] = useState<Note | null>(null);
+  const [creditCardDraft, setCreditCardDraft] = useState<CreditCardKey | null>(null);
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [editingSaving, setEditingSaving] = useState<Saving | null>(null);
+  const [deleteDraft, setDeleteDraft] = useState<{ table: DeleteTable; id: string } | null>(null);
 
   const selectedMonth = months.find((month) => month.id === selectedMonthId) ?? months[0];
   const selectedBudget = budgets.find((budget) => budget.month_id === selectedMonth?.id);
@@ -370,17 +386,12 @@ export function FinanceApp({ view }: { view: View }) {
     });
   }
 
-  async function addCreditCardAmount(cardKey: "lloyds" | "amex") {
+  async function addCreditCardAmount(formData: FormData) {
     const month = requireOpenMonth();
-    const card = creditCards.find((item) => item.key === cardKey);
+    if (!creditCardDraft) return;
+    const cardKey = creditCardDraft;
     const current = selectedCreditCards.find((item) => item.card_key === cardKey);
-    const rawAmount = window.prompt(
-      `Add amount to ${card?.name ?? "credit card"}`,
-      "0.00",
-    );
-    if (rawAmount === null) return;
-
-    const amount = Number(rawAmount);
+    const amount = Number(formData.get("amount") || 0);
     if (!Number.isFinite(amount) || amount <= 0) {
       setMessage("Enter a valid credit card amount greater than zero.");
       return;
@@ -397,46 +408,55 @@ export function FinanceApp({ view }: { view: View }) {
       );
       if (error) throw error;
     });
+    setCreditCardDraft(null);
   }
 
-  async function editExpense(expense: Expense) {
-    if (isClosed) return;
-    const title = window.prompt("Expense title", expense.title);
-    if (!title) return;
-    const amount = Number(window.prompt("Expense amount", String(expense.amount)));
-    if (!Number.isFinite(amount) || amount <= 0) return;
-    const category = window.prompt("Category", expense.category) || expense.category;
-    const notes = window.prompt("Notes", expense.notes ?? "") || null;
+  async function editExpense(formData: FormData) {
+    if (!editingExpense || isClosed) return;
+    const title = String(formData.get("title") || "").trim();
+    const amount = Number(formData.get("amount") || 0);
+    const category = String(formData.get("category") || "Other");
+    const notes = String(formData.get("notes") || "").trim() || null;
+    if (!title || !Number.isFinite(amount) || amount <= 0) {
+      setMessage("Enter a valid expense title and amount.");
+      return;
+    }
     await withSave(async () => {
       const { error } = await supabase
         .from("expenses")
         .update({ title, amount, category, notes })
-        .eq("id", expense.id);
+        .eq("id", editingExpense.id);
       if (error) throw error;
+      setEditingExpense(null);
     });
   }
 
-  async function editSaving(saving: Saving) {
-    if (isClosed) return;
-    const title = window.prompt("Savings title", saving.title);
-    if (!title) return;
-    const amount = Number(window.prompt("Savings amount", String(saving.amount)));
-    if (!Number.isFinite(amount) || amount <= 0) return;
-    const notes = window.prompt("Notes", saving.notes ?? "") || null;
+  async function editSaving(formData: FormData) {
+    if (!editingSaving || isClosed) return;
+    const title = String(formData.get("title") || "").trim();
+    const amount = Number(formData.get("amount") || 0);
+    const notes = String(formData.get("notes") || "").trim() || null;
+    if (!title || !Number.isFinite(amount) || amount <= 0) {
+      setMessage("Enter a valid savings title and amount.");
+      return;
+    }
     await withSave(async () => {
       const { error } = await supabase
         .from("savings")
         .update({ title, amount, notes })
-        .eq("id", saving.id);
+        .eq("id", editingSaving.id);
       if (error) throw error;
+      setEditingSaving(null);
     });
   }
 
-  async function deleteRow(table: "expenses" | "savings" | "direct_debits" | "notes", id: string) {
-    if (!window.confirm("Delete this record permanently?")) return;
+  async function deleteRow() {
+    if (!deleteDraft) return;
+    const { table, id } = deleteDraft;
     await withSave(async () => {
       const { error } = await supabase.from(table).delete().eq("id", id);
       if (error) throw error;
+      setDeleteDraft(null);
     });
   }
 
@@ -627,7 +647,7 @@ export function FinanceApp({ view }: { view: View }) {
           disabled={saving || isClosed}
           onBudget={saveBudget}
           onIncome={addIncome}
-          onCreditCardAdd={addCreditCardAmount}
+          onCreditCardAdd={setCreditCardDraft}
           onClose={() => setClosePreview(true)}
           canClose={Boolean(selectedMonth) && !isClosed}
         />
@@ -644,10 +664,10 @@ export function FinanceApp({ view }: { view: View }) {
           onCategory={setExpenseCategory}
           onAdd={addExpense}
           onAddSaving={addSaving}
-          onEdit={editExpense}
-          onEditSaving={editSaving}
-          onDelete={(id) => deleteRow("expenses", id)}
-          onDeleteSaving={(id) => deleteRow("savings", id)}
+          onEdit={setEditingExpense}
+          onEditSaving={setEditingSaving}
+          onDelete={(id) => setDeleteDraft({ table: "expenses", id })}
+          onDeleteSaving={(id) => setDeleteDraft({ table: "savings", id })}
         />
       ) : null}
 
@@ -661,7 +681,7 @@ export function FinanceApp({ view }: { view: View }) {
           onEdit={setEditingDebit}
           onCancelEdit={() => setEditingDebit(null)}
           onToggle={toggleDebit}
-          onDelete={(id) => deleteRow("direct_debits", id)}
+          onDelete={(id) => setDeleteDraft({ table: "direct_debits", id })}
         />
       ) : null}
 
@@ -693,7 +713,7 @@ export function FinanceApp({ view }: { view: View }) {
           onSave={saveNote}
           onEdit={setEditingNote}
           onCancelEdit={() => setEditingNote(null)}
-          onDelete={(id) => deleteRow("notes", id)}
+          onDelete={(id) => setDeleteDraft({ table: "notes", id })}
         />
       ) : null}
 
@@ -704,6 +724,45 @@ export function FinanceApp({ view }: { view: View }) {
           saving={saving}
           onCancel={() => setClosePreview(false)}
           onConfirm={closeMonth}
+        />
+      ) : null}
+
+      {creditCardDraft ? (
+        <CreditCardDialog
+          cardKey={creditCardDraft}
+          saving={saving}
+          currentAmount={
+            Number(selectedCreditCards.find((item) => item.card_key === creditCardDraft)?.amount ?? 0)
+          }
+          onCancel={() => setCreditCardDraft(null)}
+          onSave={addCreditCardAmount}
+        />
+      ) : null}
+
+      {editingExpense ? (
+        <ExpenseDialog
+          expense={editingExpense}
+          saving={saving}
+          onCancel={() => setEditingExpense(null)}
+          onSave={editExpense}
+        />
+      ) : null}
+
+      {editingSaving ? (
+        <SavingDialog
+          savingEntry={editingSaving}
+          saving={saving}
+          onCancel={() => setEditingSaving(null)}
+          onSave={editSaving}
+        />
+      ) : null}
+
+      {deleteDraft ? (
+        <DeleteDialog
+          saving={saving}
+          label={deleteLabel(deleteDraft.table)}
+          onCancel={() => setDeleteDraft(null)}
+          onConfirm={deleteRow}
         />
       ) : null}
     </div>
@@ -785,7 +844,7 @@ function Dashboard({
   canClose: boolean;
   onBudget: (data: FormData) => Promise<void>;
   onIncome: (data: FormData) => Promise<void>;
-  onCreditCardAdd: (cardKey: "lloyds" | "amex") => Promise<void>;
+  onCreditCardAdd: (cardKey: CreditCardKey) => void;
   onClose: () => void;
 }) {
   const [editingBudget, setEditingBudget] = useState(false);
@@ -907,9 +966,9 @@ function CreditCardsBlock({
 }: {
   cards: CreditCardTotal[];
   disabled: boolean;
-  onAdd: (cardKey: "lloyds" | "amex") => Promise<void>;
+  onAdd: (cardKey: CreditCardKey) => void;
 }) {
-  function amountFor(cardKey: "lloyds" | "amex") {
+  function amountFor(cardKey: CreditCardKey) {
     return Number(cards.find((card) => card.card_key === cardKey)?.amount ?? 0);
   }
 
@@ -938,7 +997,7 @@ function CreditCardsBlock({
               <button
                 className="mt-4 w-full btn btn-secondary"
                 disabled={disabled}
-                onClick={() => void onAdd(card.key)}
+                onClick={() => onAdd(card.key)}
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
                 {amount > 0 ? "Edit amount" : "Add amount"}
@@ -951,7 +1010,7 @@ function CreditCardsBlock({
   );
 }
 
-function CreditCardLogo({ cardKey }: { cardKey: "lloyds" | "amex" }) {
+function CreditCardLogo({ cardKey }: { cardKey: CreditCardKey }) {
   if (cardKey === "amex") {
     return (
       <div className="grid h-14 w-20 place-items-center rounded-[6px] border border-blueglass/40 bg-[#1f5ca8] px-2 text-center shadow-glow">
@@ -1257,8 +1316,8 @@ function ReportsView({
           <option>All</option>
           {categories.map((category) => <option key={category}>{category}</option>)}
         </select>
-        <input className="field" type="date" value={reportStart} onChange={(event) => onStart(event.target.value)} />
-        <input className="field" type="date" value={reportEnd} onChange={(event) => onEnd(event.target.value)} />
+        <DateFilterInput label="Start date" value={reportStart} onChange={onStart} />
+        <DateFilterInput label="End date" value={reportEnd} onChange={onEnd} />
       </div>
       <div className="grid gap-5 xl:grid-cols-2">
         <ChartCard title="Monthly Spending" rows={series.map((row) => ({ label: row.label, value: row.spending }))} />
@@ -1331,6 +1390,205 @@ function NotesView({
         </div>
       </div>
     </section>
+  );
+}
+
+function ExpenseDialog({
+  expense,
+  saving,
+  onCancel,
+  onSave,
+}: {
+  expense: Expense;
+  saving: boolean;
+  onCancel: () => void;
+  onSave: (data: FormData) => Promise<void>;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4 py-6 backdrop-blur-sm">
+      <form action={onSave} className="glass w-full max-w-lg rounded-[8px] p-5">
+        <p className="text-xs font-black uppercase tracking-normal text-blueglass">
+          Expense tracking
+        </p>
+        <h2 className="mt-2 text-2xl font-black text-white">Edit Expense</h2>
+        <p className="mt-2 text-sm font-semibold text-white/55">
+          Date stays as {expense.date}.
+        </p>
+
+        <div className="mt-5 grid gap-3">
+          <TextField name="title" label="Title" defaultValue={expense.title} disabled={saving} />
+          <NumberField
+            name="amount"
+            label="Amount"
+            defaultValue={Number(expense.amount)}
+            disabled={saving}
+          />
+          <CategoryField defaultValue={expense.category} disabled={saving} />
+          <TextField
+            name="notes"
+            label="Notes"
+            placeholder="Optional"
+            defaultValue={expense.notes ?? ""}
+            disabled={saving}
+          />
+        </div>
+
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+          <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={saving}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" disabled={saving}>
+            {saving ? "Saving..." : "Save Expense"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function SavingDialog({
+  savingEntry,
+  saving,
+  onCancel,
+  onSave,
+}: {
+  savingEntry: Saving;
+  saving: boolean;
+  onCancel: () => void;
+  onSave: (data: FormData) => Promise<void>;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4 py-6 backdrop-blur-sm">
+      <form action={onSave} className="glass w-full max-w-lg rounded-[8px] p-5">
+        <p className="text-xs font-black uppercase tracking-normal text-blueglass">
+          Monthly savings
+        </p>
+        <h2 className="mt-2 text-2xl font-black text-white">Edit Savings</h2>
+        <p className="mt-2 text-sm font-semibold text-white/55">
+          Date stays as {savingEntry.date}.
+        </p>
+
+        <div className="mt-5 grid gap-3">
+          <TextField name="title" label="Title" defaultValue={savingEntry.title} disabled={saving} />
+          <NumberField
+            name="amount"
+            label="Amount"
+            defaultValue={Number(savingEntry.amount)}
+            disabled={saving}
+          />
+          <TextField
+            name="notes"
+            label="Notes"
+            placeholder="Optional"
+            defaultValue={savingEntry.notes ?? ""}
+            disabled={saving}
+          />
+        </div>
+
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+          <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={saving}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" disabled={saving}>
+            {saving ? "Saving..." : "Save Savings"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function DeleteDialog({
+  label,
+  saving,
+  onCancel,
+  onConfirm,
+}: {
+  label: string;
+  saving: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4 py-6 backdrop-blur-sm">
+      <div className="glass w-full max-w-md rounded-[8px] p-5">
+        <p className="text-xs font-black uppercase tracking-normal text-rose">
+          Delete record
+        </p>
+        <h2 className="mt-2 text-2xl font-black text-white">Delete {label}?</h2>
+        <p className="mt-2 text-sm font-semibold leading-6 text-white/58">
+          This will permanently remove this {label.toLowerCase()} from the database.
+        </p>
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+          <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={saving}>
+            Cancel
+          </button>
+          <button className="btn btn-danger" onClick={onConfirm} disabled={saving}>
+            {saving ? "Deleting..." : "Delete"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CreditCardDialog({
+  cardKey,
+  currentAmount,
+  saving,
+  onCancel,
+  onSave,
+}: {
+  cardKey: CreditCardKey;
+  currentAmount: number;
+  saving: boolean;
+  onCancel: () => void;
+  onSave: (data: FormData) => Promise<void>;
+}) {
+  const card = creditCards.find((item) => item.key === cardKey);
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4 py-6 backdrop-blur-sm">
+      <form action={onSave} className="glass w-full max-w-md rounded-[8px] p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-black uppercase tracking-normal text-blueglass">
+              Credit card
+            </p>
+            <h2 className="mt-2 text-2xl font-black text-white">
+              {card?.name ?? "Credit Card"}
+            </h2>
+            <p className="mt-2 text-sm font-semibold text-white/55">
+              Current total: {currency(currentAmount)}
+            </p>
+          </div>
+          <CreditCardLogo cardKey={cardKey} />
+        </div>
+
+        <label className="mt-5 block">
+          <span className="label">Amount to add</span>
+          <input
+            className="field"
+            name="amount"
+            type="number"
+            step="0.01"
+            min="0.01"
+            placeholder="0.00"
+            autoFocus
+            required
+          />
+        </label>
+
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+          <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={saving}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" disabled={saving}>
+            {saving ? "Adding..." : "Add Amount"}
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -1494,6 +1752,29 @@ function DateField({ name, label, defaultValue, disabled }: { name: string; labe
     <label>
       <span className="label">{label}</span>
       <input className="field" name={name} type="date" defaultValue={defaultValue} disabled={disabled} required />
+    </label>
+  );
+}
+
+function DateFilterInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label>
+      <span className="label">{label}</span>
+      <input
+        className="field"
+        type="date"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        aria-label={label}
+      />
     </label>
   );
 }
