@@ -172,7 +172,7 @@ export function FinanceApp({ view }: { view: View }) {
       supabase.from("months").select("*").order("month_start", { ascending: false }),
       supabase.from("budgets").select("*"),
       supabase.from("additional_income").select("*").order("date", { ascending: false }),
-      supabase.from("direct_debits").select("*").order("name"),
+      supabase.from("direct_debits").select("*").order("created_at", { ascending: true }),
       supabase.from("expenses").select("*").order("date", { ascending: false }),
       supabase.from("savings").select("*").order("date", { ascending: false }),
       supabase.from("credit_card_totals").select("*"),
@@ -386,14 +386,13 @@ export function FinanceApp({ view }: { view: View }) {
     });
   }
 
-  async function addCreditCardAmount(formData: FormData) {
+  async function saveCreditCardTotal(formData: FormData) {
     const month = requireOpenMonth();
     if (!creditCardDraft) return;
     const cardKey = creditCardDraft;
-    const current = selectedCreditCards.find((item) => item.card_key === cardKey);
     const amount = Number(formData.get("amount") || 0);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      setMessage("Enter a valid credit card amount greater than zero.");
+    if (!Number.isFinite(amount) || amount < 0) {
+      setMessage("Enter a valid credit card total.");
       return;
     }
 
@@ -402,7 +401,7 @@ export function FinanceApp({ view }: { view: View }) {
         {
           month_id: month.id,
           card_key: cardKey,
-          amount: Number(current?.amount ?? 0) + amount,
+          amount,
         },
         { onConflict: "month_id,card_key" },
       );
@@ -735,7 +734,7 @@ export function FinanceApp({ view }: { view: View }) {
             Number(selectedCreditCards.find((item) => item.card_key === creditCardDraft)?.amount ?? 0)
           }
           onCancel={() => setCreditCardDraft(null)}
-          onSave={addCreditCardAmount}
+          onSave={saveCreditCardTotal}
         />
       ) : null}
 
@@ -860,12 +859,11 @@ function Dashboard({
 
   return (
     <>
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Total Budget" value={currency(totals.totalBudget)} accent="blueglass" />
         <StatCard label="Additional Income" value={currency(totals.additionalIncome)} accent="ice" />
         <StatCard label="Direct Debits" value={currency(totals.directDebitsTotal)} accent="rose" />
         <StatCard label="Expenses" value={currency(totals.expensesTotal)} accent="brass" />
-        <StatCard label="Available Balance" value={currency(totals.remainingTotal)} accent="blueglass" />
       </section>
 
       <section className="grid items-start gap-5 xl:grid-cols-[1.1fr_0.9fr]">
@@ -1000,7 +998,7 @@ function CreditCardsBlock({
                 onClick={() => onAdd(card.key)}
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
-                {amount > 0 ? "Edit amount" : "Add amount"}
+                {amount > 0 ? "Edit total" : "Set total"}
               </button>
             </div>
           );
@@ -1566,13 +1564,14 @@ function CreditCardDialog({
         </div>
 
         <label className="mt-5 block">
-          <span className="label">Amount to add</span>
+          <span className="label">Total amount</span>
           <input
             className="field"
             name="amount"
             type="number"
             step="0.01"
-            min="0.01"
+            min="0"
+            defaultValue={currentAmount}
             placeholder="0.00"
             autoFocus
             required
@@ -1584,7 +1583,7 @@ function CreditCardDialog({
             Cancel
           </button>
           <button className="btn btn-primary" disabled={saving}>
-            {saving ? "Adding..." : "Add Amount"}
+            {saving ? "Saving..." : "Save Total"}
           </button>
         </div>
       </form>
