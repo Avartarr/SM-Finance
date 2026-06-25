@@ -7,6 +7,7 @@ truncate table
   public.credit_card_totals,
   public.savings,
   public.expenses,
+  public.direct_debit_month_statuses,
   public.additional_income,
   public.budgets,
   public.months,

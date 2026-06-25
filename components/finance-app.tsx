@@ -21,6 +21,7 @@ import {
   type Budget,
   type CreditCardTotal,
   type DirectDebit,
+  type DirectDebitMonthStatus,
   type Expense,
   type Month,
   type MonthlySummary,
@@ -42,6 +43,8 @@ const creditCards = [
   { key: "lloyds", name: "Lloyds Credit Card" },
   { key: "amex", name: "American Express" },
 ] as const;
+
+const MONTHLY_DIRECT_DEBITS_START = "2026-07-01";
 
 type CreditCardKey = (typeof creditCards)[number]["key"];
 type DeleteTable = "expenses" | "savings" | "direct_debits" | "notes";
@@ -88,6 +91,10 @@ function deleteLabel(table: DeleteTable) {
   }[table];
 }
 
+function usesMonthlyDirectDebits(month?: Pick<Month, "month_start">) {
+  return Boolean(month && month.month_start >= MONTHLY_DIRECT_DEBITS_START);
+}
+
 export function FinanceApp({ view }: { view: View }) {
   const supabase = useMemo(() => createClient(), []);
   const searchParams = useSearchParams();
@@ -95,6 +102,7 @@ export function FinanceApp({ view }: { view: View }) {
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [income, setIncome] = useState<AdditionalIncome[]>([]);
   const [directDebits, setDirectDebits] = useState<DirectDebit[]>([]);
+  const [debitMonthStatuses, setDebitMonthStatuses] = useState<DirectDebitMonthStatus[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [savings, setSavings] = useState<Saving[]>([]);
   const [creditCardTotals, setCreditCardTotals] = useState<CreditCardTotal[]>([]);
@@ -120,7 +128,6 @@ export function FinanceApp({ view }: { view: View }) {
 
   const selectedMonth = months.find((month) => month.id === selectedMonthId) ?? months[0];
   const selectedBudget = budgets.find((budget) => budget.month_id === selectedMonth?.id);
-  const activeDebits = directDebits.filter((debit) => debit.is_active);
   const selectedIncome = income.filter((entry) => entry.month_id === selectedMonth?.id);
   const selectedExpenses = expenses.filter((expense) => expense.month_id === selectedMonth?.id);
   const selectedSavings = savings.filter((saving) => saving.month_id === selectedMonth?.id);
@@ -128,6 +135,18 @@ export function FinanceApp({ view }: { view: View }) {
     (card) => card.month_id === selectedMonth?.id,
   );
   const isClosed = selectedMonth?.status === "closed";
+  const monthlyDebitStatusMode = usesMonthlyDirectDebits(selectedMonth);
+  const isDebitEnabledForMonth = (debit: DirectDebit, month = selectedMonth) => {
+    if (!debit.is_active) return false;
+    if (!usesMonthlyDirectDebits(month)) return debit.is_active;
+    return debitMonthStatuses.some(
+      (status) =>
+        status.month_id === month?.id &&
+        status.direct_debit_id === debit.id &&
+        status.is_enabled,
+    );
+  };
+  const activeDebits = directDebits.filter((debit) => isDebitEnabledForMonth(debit));
 
   const totals = useMemo(() => {
     if (!selectedMonth) return emptyTotals;
@@ -163,6 +182,7 @@ export function FinanceApp({ view }: { view: View }) {
       budgetsResult,
       incomeResult,
       debitsResult,
+      debitStatusesResult,
       expensesResult,
       savingsResult,
       creditCardsResult,
@@ -173,6 +193,7 @@ export function FinanceApp({ view }: { view: View }) {
       supabase.from("budgets").select("*"),
       supabase.from("additional_income").select("*").order("date", { ascending: false }),
       supabase.from("direct_debits").select("*").order("created_at", { ascending: true }),
+      supabase.from("direct_debit_month_statuses").select("*"),
       supabase.from("expenses").select("*").order("date", { ascending: false }),
       supabase.from("savings").select("*").order("date", { ascending: false }),
       supabase.from("credit_card_totals").select("*"),
@@ -185,6 +206,7 @@ export function FinanceApp({ view }: { view: View }) {
       budgetsResult.error ||
       incomeResult.error ||
       debitsResult.error ||
+      optionalTableError(debitStatusesResult.error) ||
       expensesResult.error ||
       optionalTableError(savingsResult.error) ||
       optionalTableError(creditCardsResult.error) ||
@@ -225,6 +247,9 @@ export function FinanceApp({ view }: { view: View }) {
     setBudgets((budgetsResult.data ?? []) as Budget[]);
     setIncome((incomeResult.data ?? []) as AdditionalIncome[]);
     setDirectDebits((debitsResult.data ?? []) as DirectDebit[]);
+    setDebitMonthStatuses(
+      debitStatusesResult.error ? [] : ((debitStatusesResult.data ?? []) as DirectDebitMonthStatus[]),
+    );
     setExpenses((expensesResult.data ?? []) as Expense[]);
     setSavings(savingsResult.error ? [] : ((savingsResult.data ?? []) as Saving[]));
     setCreditCardTotals(
@@ -234,7 +259,8 @@ export function FinanceApp({ view }: { view: View }) {
     setSummaries((summariesResult.data ?? []) as MonthlySummary[]);
     setSelectedMonthId((current) => {
       if (current && monthRows.some((month) => month.id === current)) return current;
-      return monthRows.find((month) => month.status === "open")?.id ?? monthRows[0]?.id ?? "";
+      const currentMonth = monthRows.find((month) => month.month_start === firstDayOfMonth());
+      return currentMonth?.id ?? monthRows.find((month) => month.status === "open")?.id ?? monthRows[0]?.id ?? "";
     });
     setLoading(false);
   }, [supabase]);
@@ -253,6 +279,11 @@ export function FinanceApp({ view }: { view: View }) {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "direct_debits" },
+        () => loadData(),
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "direct_debit_month_statuses" },
         () => loadData(),
       )
       .on("postgres_changes", { event: "*", schema: "public", table: "expenses" }, () => loadData())
@@ -476,7 +507,29 @@ export function FinanceApp({ view }: { view: View }) {
   }
 
   async function toggleDebit(debit: DirectDebit) {
+    const month = requireOpenMonth();
     await withSave(async () => {
+      if (usesMonthlyDirectDebits(month)) {
+        const nextEnabled = !isDebitEnabledForMonth(debit, month);
+        const { error } = await supabase.from("direct_debit_month_statuses").upsert(
+          {
+            month_id: month.id,
+            direct_debit_id: debit.id,
+            is_enabled: nextEnabled,
+          },
+          { onConflict: "month_id,direct_debit_id" },
+        );
+        if (error) throw error;
+        if (nextEnabled && !debit.is_active) {
+          const { error: debitError } = await supabase
+            .from("direct_debits")
+            .update({ is_active: true })
+            .eq("id", debit.id);
+          if (debitError) throw debitError;
+        }
+        return;
+      }
+
       const { error } = await supabase
         .from("direct_debits")
         .update({ is_active: !debit.is_active })
@@ -589,7 +642,11 @@ export function FinanceApp({ view }: { view: View }) {
         const monthSavings = savings
           .filter((saving) => saving.month_id === month.id)
           .reduce((sum, saving) => sum + Number(saving.amount), 0);
-        const debitTotal = summary?.total_direct_debits ?? activeDebits.reduce((sum, d) => sum + Number(d.amount), 0);
+        const debitTotal =
+          summary?.total_direct_debits ??
+          directDebits
+            .filter((debit) => isDebitEnabledForMonth(debit, month))
+            .reduce((sum, debit) => sum + Number(debit.amount), 0);
         const savingsTotal = summary?.total_savings ?? monthSavings;
         const totalBudget = summary?.total_budget ?? (budget?.total_budget_amount ?? 0) + monthIncome;
         return {
@@ -600,7 +657,7 @@ export function FinanceApp({ view }: { view: View }) {
           budget: totalBudget,
         };
       });
-  }, [activeDebits, budgets, expenses, income, months, savings, summaries]);
+  }, [budgets, debitMonthStatuses, directDebits, expenses, income, months, savings, summaries]);
 
   if (loading) {
     return (
@@ -676,6 +733,8 @@ export function FinanceApp({ view }: { view: View }) {
           activeTotal={totals.directDebitsTotal}
           editing={editingDebit}
           disabled={saving}
+          monthlyMode={monthlyDebitStatusMode}
+          isDebitEnabled={isDebitEnabledForMonth}
           onSave={saveDebit}
           onEdit={setEditingDebit}
           onCancelEdit={() => setEditingDebit(null)}
@@ -685,7 +744,18 @@ export function FinanceApp({ view }: { view: View }) {
       ) : null}
 
       {view === "history" ? (
-        <HistoryView months={months} budgets={budgets} summaries={summaries} expenses={expenses} savings={savings} debits={activeDebits} />
+        <HistoryView
+          months={months}
+          budgets={budgets}
+          summaries={summaries}
+          expenses={expenses}
+          savings={savings}
+          getDirectDebitTotal={(month) =>
+            directDebits
+              .filter((debit) => isDebitEnabledForMonth(debit, month))
+              .reduce((sum, debit) => sum + Number(debit.amount), 0)
+          }
+        />
       ) : null}
 
       {view === "reports" ? (
@@ -1149,6 +1219,8 @@ function DirectDebitsView({
   activeTotal,
   editing,
   disabled,
+  monthlyMode,
+  isDebitEnabled,
   onSave,
   onEdit,
   onCancelEdit,
@@ -1159,6 +1231,8 @@ function DirectDebitsView({
   activeTotal: number;
   editing: DirectDebit | null;
   disabled: boolean;
+  monthlyMode: boolean;
+  isDebitEnabled: (debit: DirectDebit) => boolean;
   onSave: (data: FormData) => Promise<void>;
   onEdit: (debit: DirectDebit) => void;
   onCancelEdit: () => void;
@@ -1174,7 +1248,7 @@ function DirectDebitsView({
           <CategoryField defaultValue={editing?.category} disabled={disabled} />
           <label className="flex items-center gap-3 rounded-[8px] border border-white/10 bg-white/6 p-3 text-sm font-bold text-white/78">
             <input type="checkbox" name="is_active" defaultChecked={editing?.is_active ?? true} disabled={disabled} />
-            Active
+            Keep in recurring list
           </label>
           <button className="btn btn-primary" disabled={disabled}>{editing ? "Save Direct Debit" : "Add Direct Debit"}</button>
           {editing ? (
@@ -1187,13 +1261,20 @@ function DirectDebitsView({
           <h2 className="text-xl font-black text-white">Recurring Direct Debits</h2>
           <StatPill label="Active Monthly Total" value={currency(activeTotal)} />
         </div>
+        {monthlyMode ? (
+          <p className="mt-3 text-sm font-semibold text-white/50">
+            Direct debits start disabled for this month. Enable each one when it is ready to count.
+          </p>
+        ) : null}
         <div className="mt-5 space-y-3">
-          {debits.map((debit) => (
+          {debits.map((debit) => {
+            const enabled = isDebitEnabled(debit);
+            return (
             <div key={debit.id} className="grid gap-3 rounded-[8px] border border-white/10 bg-white/6 p-3 md:grid-cols-[1fr_auto] md:items-center">
-              <RecordLine title={debit.name} meta={`${debit.category} - ${debit.is_active ? "Active" : "Inactive"}`} amount={debit.amount} muted={!debit.is_active} />
+              <RecordLine title={debit.name} meta={`${debit.category} - ${enabled ? "Active" : "Inactive"}`} amount={debit.amount} muted={!enabled} />
               <div className="flex flex-wrap gap-2">
                 <button className="btn btn-secondary" onClick={() => onToggle(debit)}>
-                  {debit.is_active ? "Disable" : "Enable"}
+                  {enabled ? "Disable" : "Enable"}
                 </button>
                 <button className="btn btn-secondary" onClick={() => onEdit(debit)} aria-label="Edit direct debit">
                   <Edit3 className="h-4 w-4" aria-hidden="true" />
@@ -1203,7 +1284,8 @@ function DirectDebitsView({
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
           {debits.length === 0 ? <Empty text="No recurring direct debits yet." /> : null}
         </div>
       </div>
@@ -1217,21 +1299,21 @@ function HistoryView({
   summaries,
   expenses,
   savings,
-  debits,
+  getDirectDebitTotal,
 }: {
   months: Month[];
   budgets: Budget[];
   summaries: MonthlySummary[];
   expenses: Expense[];
   savings: Saving[];
-  debits: DirectDebit[];
+  getDirectDebitTotal: (month: Month) => number;
 }) {
   const rows = months.map((month) => {
     const summary = summaries.find((item) => item.month_id === month.id);
     const budget = budgets.find((item) => item.month_id === month.id);
     const monthExpenses = expenses.filter((expense) => expense.month_id === month.id).reduce((sum, expense) => sum + Number(expense.amount), 0);
     const monthSavings = savings.filter((saving) => saving.month_id === month.id).reduce((sum, saving) => sum + Number(saving.amount), 0);
-    const debitTotal = debits.reduce((sum, debit) => sum + Number(debit.amount), 0);
+    const debitTotal = getDirectDebitTotal(month);
     const savingsTotal = summary?.total_savings ?? monthSavings;
     const totalBudget = summary?.total_budget ?? budget?.total_budget_amount ?? 0;
     return {

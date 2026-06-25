@@ -53,6 +53,16 @@ export type DirectDebit = {
   updated_at: string;
 };
 
+export type DirectDebitMonthStatus = {
+  id: string;
+  month_id: string;
+  direct_debit_id: string;
+  is_enabled: boolean;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Expense = {
   id: string;
   month_id: string;
@@ -135,6 +145,7 @@ export type Database = {
       budgets: Table<Budget>;
       additional_income: Table<AdditionalIncome>;
       direct_debits: Table<DirectDebit>;
+      direct_debit_month_statuses: Table<DirectDebitMonthStatus>;
       expenses: Table<Expense>;
       savings: Table<Saving>;
       credit_card_totals: Table<CreditCardTotal>;

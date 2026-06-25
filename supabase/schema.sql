@@ -60,6 +60,17 @@ create table if not exists public.direct_debits (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.direct_debit_month_statuses (
+  id uuid primary key default gen_random_uuid(),
+  month_id uuid not null references public.months(id) on delete restrict,
+  direct_debit_id uuid not null references public.direct_debits(id) on delete cascade,
+  is_enabled boolean not null default false,
+  updated_by uuid references auth.users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (month_id, direct_debit_id)
+);
+
 create table if not exists public.expenses (
   id uuid primary key default gen_random_uuid(),
   month_id uuid not null references public.months(id) on delete restrict,
@@ -138,6 +149,8 @@ create index if not exists expenses_category_idx on public.expenses(category);
 create index if not exists savings_month_id_idx on public.savings(month_id);
 create index if not exists savings_date_idx on public.savings(date);
 create index if not exists credit_card_totals_month_id_idx on public.credit_card_totals(month_id);
+create index if not exists debit_month_statuses_month_id_idx on public.direct_debit_month_statuses(month_id);
+create index if not exists debit_month_statuses_debit_id_idx on public.direct_debit_month_statuses(direct_debit_id);
 create index if not exists income_month_id_idx on public.additional_income(month_id);
 create index if not exists actions_actor_user_id_idx on public.actions(actor_user_id);
 create index if not exists actions_created_at_idx on public.actions(created_at);
@@ -198,7 +211,7 @@ language plpgsql
 as $$
 begin
   new.updated_at = now();
-  if tg_table_name in ('budgets', 'direct_debits', 'credit_card_totals') then
+  if tg_table_name in ('budgets', 'direct_debits', 'direct_debit_month_statuses', 'credit_card_totals') then
     new.updated_by = auth.uid();
   end if;
   return new;
@@ -275,6 +288,11 @@ create trigger touch_direct_debits_updated_at
 before update on public.direct_debits
 for each row execute function public.touch_updated_at();
 
+drop trigger if exists touch_direct_debit_month_statuses_updated_at on public.direct_debit_month_statuses;
+create trigger touch_direct_debit_month_statuses_updated_at
+before update on public.direct_debit_month_statuses
+for each row execute function public.touch_updated_at();
+
 drop trigger if exists touch_expenses_updated_at on public.expenses;
 create trigger touch_expenses_updated_at
 before update on public.expenses
@@ -320,6 +338,11 @@ create trigger lock_credit_cards_when_month_closed
 before insert or update or delete on public.credit_card_totals
 for each row execute function public.prevent_closed_month_changes();
 
+drop trigger if exists lock_debit_month_statuses_when_month_closed on public.direct_debit_month_statuses;
+create trigger lock_debit_month_statuses_when_month_closed
+before insert or update or delete on public.direct_debit_month_statuses
+for each row execute function public.prevent_closed_month_changes();
+
 drop trigger if exists close_month_actor on public.months;
 create trigger close_month_actor
 before update on public.months
@@ -334,6 +357,7 @@ begin
     'budgets',
     'additional_income',
     'direct_debits',
+    'direct_debit_month_statuses',
     'expenses',
     'savings',
     'credit_card_totals',
@@ -356,6 +380,7 @@ alter table public.months enable row level security;
 alter table public.budgets enable row level security;
 alter table public.additional_income enable row level security;
 alter table public.direct_debits enable row level security;
+alter table public.direct_debit_month_statuses enable row level security;
 alter table public.expenses enable row level security;
 alter table public.savings enable row level security;
 alter table public.credit_card_totals enable row level security;
@@ -450,6 +475,27 @@ with check (public.app_is_authorized());
 drop policy if exists "authorized users delete direct debits" on public.direct_debits;
 create policy "authorized users delete direct debits"
 on public.direct_debits for delete
+using (public.app_is_authorized());
+
+drop policy if exists "authorized users read debit month statuses" on public.direct_debit_month_statuses;
+create policy "authorized users read debit month statuses"
+on public.direct_debit_month_statuses for select
+using (public.app_is_authorized());
+
+drop policy if exists "authorized users insert debit month statuses" on public.direct_debit_month_statuses;
+create policy "authorized users insert debit month statuses"
+on public.direct_debit_month_statuses for insert
+with check (public.app_is_authorized());
+
+drop policy if exists "authorized users update debit month statuses" on public.direct_debit_month_statuses;
+create policy "authorized users update debit month statuses"
+on public.direct_debit_month_statuses for update
+using (public.app_is_authorized())
+with check (public.app_is_authorized());
+
+drop policy if exists "authorized users delete debit month statuses" on public.direct_debit_month_statuses;
+create policy "authorized users delete debit month statuses"
+on public.direct_debit_month_statuses for delete
 using (public.app_is_authorized());
 
 drop policy if exists "authorized users read expenses" on public.expenses;
@@ -556,6 +602,7 @@ alter table public.months replica identity full;
 alter table public.budgets replica identity full;
 alter table public.additional_income replica identity full;
 alter table public.direct_debits replica identity full;
+alter table public.direct_debit_month_statuses replica identity full;
 alter table public.expenses replica identity full;
 alter table public.savings replica identity full;
 alter table public.credit_card_totals replica identity full;
@@ -570,6 +617,7 @@ begin
       public.budgets,
       public.additional_income,
       public.direct_debits,
+      public.direct_debit_month_statuses,
       public.expenses,
       public.savings,
       public.credit_card_totals,
