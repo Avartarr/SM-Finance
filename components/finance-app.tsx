@@ -45,6 +45,7 @@ const creditCards = [
 ] as const;
 
 const MONTHLY_DIRECT_DEBITS_START = "2026-07-01";
+const SELECTED_MONTH_STORAGE_KEY = "sandm:selected-month-id";
 
 type CreditCardKey = (typeof creditCards)[number]["key"];
 type DeleteTable = "expenses" | "savings" | "direct_debits" | "notes";
@@ -93,6 +94,16 @@ function deleteLabel(table: DeleteTable) {
 
 function usesMonthlyDirectDebits(month?: Pick<Month, "month_start">) {
   return Boolean(month && month.month_start >= MONTHLY_DIRECT_DEBITS_START);
+}
+
+function rememberSelectedMonth(monthId: string) {
+  if (!monthId || typeof window === "undefined") return;
+  window.sessionStorage.setItem(SELECTED_MONTH_STORAGE_KEY, monthId);
+}
+
+function readRememberedMonth() {
+  if (typeof window === "undefined") return "";
+  return window.sessionStorage.getItem(SELECTED_MONTH_STORAGE_KEY) ?? "";
 }
 
 export function FinanceApp({ view }: { view: View }) {
@@ -259,11 +270,15 @@ export function FinanceApp({ view }: { view: View }) {
     setSummaries((summariesResult.data ?? []) as MonthlySummary[]);
     setSelectedMonthId((current) => {
       if (current && monthRows.some((month) => month.id === current)) return current;
+      const monthFromUrl = searchParams.get("month");
+      if (monthFromUrl && monthRows.some((month) => month.id === monthFromUrl)) return monthFromUrl;
+      const rememberedMonth = readRememberedMonth();
+      if (rememberedMonth && monthRows.some((month) => month.id === rememberedMonth)) return rememberedMonth;
       const currentMonth = monthRows.find((month) => month.month_start === firstDayOfMonth());
       return currentMonth?.id ?? monthRows.find((month) => month.status === "open")?.id ?? monthRows[0]?.id ?? "";
     });
     setLoading(false);
-  }, [supabase]);
+  }, [searchParams, supabase]);
 
   useEffect(() => {
     void loadData();
@@ -308,6 +323,10 @@ export function FinanceApp({ view }: { view: View }) {
     }
   }, [months, searchParams]);
 
+  useEffect(() => {
+    if (selectedMonthId) rememberSelectedMonth(selectedMonthId);
+  }, [selectedMonthId]);
+
   async function withSave(action: () => Promise<void>) {
     setSaving(true);
     setMessage("");
@@ -338,7 +357,9 @@ export function FinanceApp({ view }: { view: View }) {
         .maybeSingle();
 
       if (existing) {
-        setSelectedMonthId((existing as Month).id);
+        const existingMonthId = (existing as Month).id;
+        rememberSelectedMonth(existingMonthId);
+        setSelectedMonthId(existingMonthId);
         return;
       }
 
@@ -353,6 +374,7 @@ export function FinanceApp({ view }: { view: View }) {
         house_budget_amount: 0,
         total_budget_amount: 0,
       });
+      rememberSelectedMonth(data.id);
       setSelectedMonthId(data.id);
     });
   }
@@ -597,6 +619,7 @@ export function FinanceApp({ view }: { view: View }) {
           house_budget_amount: 0,
           total_budget_amount: 0,
         });
+        rememberSelectedMonth(nextMonth.id);
         setSelectedMonthId(nextMonth.id);
       }
       setClosePreview(false);
@@ -673,9 +696,12 @@ export function FinanceApp({ view }: { view: View }) {
         title={titleForView(view)}
         selectedMonth={selectedMonth}
         months={months}
-        onMonthChange={setSelectedMonthId}
+        onMonthChange={(monthId) => {
+          rememberSelectedMonth(monthId);
+          setSelectedMonthId(monthId);
+        }}
         onCreateMonth={createMonth}
-        showMonth={view !== "notes" && view !== "direct-debits"}
+        showMonth={view !== "notes"}
       />
 
       {message ? (
